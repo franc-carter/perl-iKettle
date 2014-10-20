@@ -3,6 +3,7 @@ package Device::iKettle;
 use strict;
 use warnings;
 use IO::Socket;
+use IO::Select;
 use Carp;
 
 use constant PORT             => 2000;
@@ -13,8 +14,8 @@ use constant STATUS_BYTE_80C  => 0b00001000;
 use constant STATUS_BYTE_95C  => 0b00010000;
 use constant STATUS_BYTE_100C => 0b00100000;
 #
-use constant SET_ON => "0x05";
-use constant SET_OFF => "0x00";
+use constant SET_ON => "0x5";
+use constant SET_OFF => "0x0";
 #
 use constant SET_REACHED => "0x03";
 #
@@ -51,6 +52,8 @@ my $warm_to_cmd = {
     20 => "set sys output 0x8020",
 };
 
+$/ = "\r";
+
 sub new($$)
 {
     my ($class,$kettle_addr) = @_;
@@ -69,6 +72,22 @@ sub new($$)
     $self->{warm_until}       = undef;
     $self->{temperature_goal} = undef;
 
+    $self->{socket}->print("get sys status\n");
+    my $response = readline $self->{socket};
+    my ($code) = ($response =~ m/^.*=(\w)/)
+    if (defined($code)) {
+        $self->{on} = $code & STATUS_BYTE_ON;
+        if ($code & STATUS_BYTE_100C) {
+            $self->{temperature_goal} = 100;
+        } elsif (($code & STATUS_BYTE_95C) {
+            $self->{temperature_goal} = 95;
+        } elsif (($code & STATUS_BYTE_80C) {
+            $self->{temperature_goal} = 80;
+        } elsif (($code & STATUS_BYTE_65C) {
+            $self->{temperature_goal} = 65;
+        }
+    }
+
     my $obj = bless $self, $class;
 
     return $obj;
@@ -78,10 +97,18 @@ sub print_status($)
 {
     my ($self) = @_;
 
+    my $on = $self->on();
+    my $t  = $self->temperature_goal();
+    my $w  = $self->warm_until();
+
+    if (!defined($on)) { $on = '?'; }
+    if (!defined($t))  { $t  = '?'; }
+    if (!defined($w))  { $w  = '?'; }
+
     print "Kettle at: ",$self->{address},"\n";
-    print "    On: ",$self->{on},"\n";
-    print "    Temperature Goal: ",$self->{temperature_goal},"C\n";
-    print "    Warm Until: ",$self->{warm_until},"\n";
+    print "    On: $on\n";
+    print "    Temperature Goal: $t","C\n";
+    print "    Warm Until: $w\n";
 }
 
 sub on($)
@@ -96,7 +123,7 @@ sub on($)
     return $self->{on};
 }
 
-sub temperature($$)
+sub temperature_goal($$)
 {
     my ($self,$temperature) = @_;
 
@@ -105,7 +132,22 @@ sub temperature($$)
         $self->{socket}->print("$cmd\n");
     }
 
-    return $self->{temperature};
+    return $self->{temperature_goal};
+}
+
+sub warm_until($)
+{
+    my ($self) = @_;
+
+    return $self->{warm_until};
+}
+
+sub warm_for($$)
+{
+    my ($self,$minutes) = @_;
+
+    my $cmd = $warm_to_cmd->{$minutes};
+    $self->{socket}->print("$cmd\n");
 }
 
 sub get_sys_status($)
@@ -149,6 +191,14 @@ sub process_message($)
             $self->{warm_until} = time() + 10*60;
         } elsif ($code eq WARM_20) {
             $self->{warm_until} = time() + 20*60;
+        } elsif ($code eq "0x100") {
+            $self->{temperature_goal} = 100;
+        } elsif ($code eq "0x95") {
+            $self->{temperature_goal} = 95;
+        } elsif ($code eq "0x80") {
+            $self->{temperature_goal} = 80;
+        } elsif ($code eq "0x65") {
+            $self->{temperature_goal} = 65;
         }
     }
 }
@@ -167,10 +217,53 @@ sub get_message($$)
 {
     my ($self) = @_;
 
-    my $message = <$self-{socket}>;
+    my $fh = $self->{socket};
+    my $message = readline $fh;
 
     return $message;
 }
 
 1;
+
+=begin
+
+from Button Pressing
+
+Message: sys status 0x5
+Message: sys status 0x100
+Message: sys status 0x65
+Message: sys status 0x80
+Message: sys status 0x95
+Message: sys status 0x100
+Message: sys status 0x0
+Message: sys status 0x5
+Message: sys status 0x100
+Message: sys status 0x65
+Message: sys status 0x11
+Message: sys status 0x10
+Message: sys status 0x80
+Message: sys status 0x11
+Message: sys status 0x0
+
+From phone app pressing
+
+Message: sys status 0x5
+Message: sys status 0x100
+Message: sys status 0x65
+Message: sys status 0x11
+Message: sys status 0x0
+Message: sys status 0x5
+Message: sys status 0x100
+Message: sys status 0x80
+Message: sys status 0x11
+Message: sys status 0x0
+Message: sys status 0x5
+Message: sys status 0x100
+Message: sys status 0x95
+Message: sys status 0x11
+Message: sys status 0x0
+
+=end
+
+
 
